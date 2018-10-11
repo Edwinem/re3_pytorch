@@ -1,169 +1,235 @@
-import os, sys
+#Python modules
+import argparse
+import logging
+import json
+import warnings
+import os
+
+#Pytorch modules
+from torch.utils.data import DataLoader
 import torch
 from torch.autograd import Variable
 from torchvision import transforms
-
-import math
-import numpy as np
 import torch.optim as optim
 
-import datasets
+import numpy as np
 from datasets import ALOVDataset
 import model
-from torch.utils.data import DataLoader
-
-use_gpu = torch.cuda.is_available()
-
-
-import warnings
+import pytorch_utils as util
 
 warnings.filterwarnings("ignore")
-
-# globals
-learning_rate = 0.00001
-save_directory = '../saved_models/'
-save_model_step = 5
+logging.getLogger().setLevel(logging.INFO)
 
 
-# Convert numpy arrays to torch tensors
-class ToTensor(object):
-    def __call__(self, sample):
-        prev_img, curr_img = sample['previmg'], sample['currimg']
-        # swap color axis because numpy image: H x W x C ; torch image: C X H X W
-        prev_img = prev_img.transpose((2, 0, 1))
-        curr_img = curr_img.transpose((2, 0, 1))
-        if 'currbb' in sample:
-            currbb = sample['currbb']
-            return {'previmg': torch.from_numpy(prev_img).float(),
-                    'currimg': torch.from_numpy(curr_img).float(),
-                    'currbb': torch.from_numpy(currbb).float()
-                    }
-        else:
-            return {'previmg': torch.from_numpy(prev_img).float(),
-                    'currimg': torch.from_numpy(curr_img).float()
-                    }
+transform = transforms.Compose([util.Normalize(), util.ToTensor()])
 
 
-# To normalize the data points
-class Normalize(object):
-    def __call__(self, sample):
+def train(model, optimizer, loss_fn, dataloader, metrics, params):
+    """Train the model on `num_steps` batches
+    Args:
+        model: (torch.nn.Module) the neural network
+        optimizer: (torch.optim) optimizer for parameters of model
+        loss_fn: a function that takes batch_output and batch_labels and computes the loss for the batch
+        dataloader: (DataLoader) a torch.utils.data.DataLoader object that fetches training data
+        metrics: (dict) a dictionary of functions that compute a metric using the output and labels of each batch
+        params: (Params) hyperparameters
+        num_steps: (int) number of batches to train on, each of size params.batch_size
+    """
 
-        prev_img, curr_img = sample['previmg'], sample['currimg']
-        self.mean = [104, 117, 123]
-        prev_img = prev_img.astype(float)
-        curr_img = curr_img.astype(float)
-        prev_img -= np.array(self.mean).astype(float)
-        curr_img -= np.array(self.mean).astype(float)
+    # set model to training mode
+    model.train()
 
-        if 'currbb' in sample:
-            currbb = sample['currbb']
-            currbb = currbb * (10. / 227);
-            return {'previmg': prev_img,
-                    'currimg': curr_img,
-                    'currbb': currbb}
-        else:
-            return {'previmg': prev_img,
-                    'currimg': curr_img
-                    }
+    # summary for current training loop and a running average object for loss
+    summ = []
+    loss_avg = util.RunningAverage()
 
+    for i,data in enumerate(dataloader):
+        x1, x2, y = data['previmg'], data['currimg'], data['currbb']
+        if params.cuda:
+            x1, x2, y = Variable(x1.cuda()), Variable(x2.cuda()), Variable(y.cuda(), requires_grad=False)
 
-transform = transforms.Compose([Normalize(), ToTensor()])
+        output = model(x1, x2)
+        loss = loss_fn(output, y)
 
+        loss.backward(retain_graph=True)
 
-def train_model(net, dataloader, optim, loss_function, num_epochs):
-    dataset_size = dataloader.dataset.len
-    for epoch in range(num_epochs):
-        net.train()
-        curr_loss = 0.0
+        # performs updates using calculated gradients
+        optimizer.step()
 
-        # currently training on just ALOV dataset
-        i = 0
-        for data in dataloader:
+        # Evaluate summaries only once in a while
+        if i % params.save_summary_steps == 0:
+            # extract data from torch Variable, move to cpu, convert to numpy arrays
+            output = output.data.cpu().numpy()
+            # compute all metrics on this batch
+            summary_batch = {}
+            summary_batch['loss'] = loss.data[0]
+            summ.append(summary_batch)
+            logging.info('- Loss for iteration {} is {}'.format(i,loss.data[0]))
 
-            x1, x2, y = data['previmg'], data['currimg'], data['currbb']
-            if use_gpu:
-                x1, x2, y = Variable(x1.cuda()), Variable(x2.cuda()), Variable(y.cuda(), requires_grad=False)
-            else:
-                x1, x2, y = Variable(x1), Variable(x2), Variable(y, requires_grad=False)
+        # update the average loss
+        loss_avg.update(loss.data[0])
 
-            optim.zero_grad()
-
-            output = net(x1, x2)
-            loss = loss_function(output, y)
-
-            loss.backward(retain_graph=True)
-            optim.step()
-
-            print('[training] epoch = %d, i = %d/%d, loss = %f' % (epoch, i, dataset_size		,loss.data[0]) )
-            print(torch.cuda.memory_allocated)
-            sys.stdout.flush()
-            i = i + 1
-            curr_loss += loss.data[0]
-
-        epoch_loss = curr_loss / dataset_size
-        print('Loss: {:.4f}'.format(epoch_loss))
-
-        path = save_directory + '_batch_' + str(epoch) + '_loss_' + str(round(epoch_loss, 3)) + '.pth'
-        torch.save(net.state_dict(), path)
-
-        val_loss = evaluate(net, dataloader, loss_function, epoch)
-        print('Validation Loss: {:.4f}'.format(val_loss))
+    # compute mean of all metrics in summary
+    metrics_mean = {metric: np.mean([x[metric] for x in summ]) for metric in summ[0]}
+    metrics_string = " ; ".join("{}: {:05.3f}".format(k, v) for k, v in metrics_mean.items())
+    logging.info("- Train metrics: " + metrics_string)
 
 
-    return net
+def train_and_evaluate(model, train_dataloader, val_dataloader, optimizer, loss_fn, metrics, params, model_dir,
+                       restore_file=None):
+    """Train the model and evaluate every epoch.
+    Args:
+        model: (torch.nn.Module) the neural network
+        train_dataloader: (DataLoader) a torch.utils.data.DataLoader object that fetches training data
+        val_dataloader: (DataLoader) a torch.utils.data.DataLoader object that fetches validation data
+        optimizer: (torch.optim) optimizer for parameters of model
+        loss_fn: a function that takes batch_output and batch_labels and computes the loss for the batch
+        metrics: (dict) a dictionary of functions that compute a metric using the output and labels of each batch
+        params: (Params) hyperparameters
+        model_dir: (string) directory containing config, weights and log
+        restore_file: (string) optional- name of file to restore from (without its extension .pth.tar)
+    """
+    # reload weights from restore_file if specified
+    if restore_file is not None:
+        restore_path = os.path.join(args.model_dir, args.restore_file + '.pth.tar')
+        # logging.info("Restoring parameters from {}".format(restore_path))
+        util.load_checkpoint(restore_path, model, optimizer)
 
-def evaluate(model, dataloader, criterion, epoch):
+    best_val_acc = 0.0
 
+    for epoch in range(params.num_epochs):
+        # Run one epoch
+        logging.info("Epoch {}/{}".format(epoch + 1, params.num_epochs))
+
+        # compute number of batches in one epoch (one full pass over the training set)
+        train(model, optimizer, loss_fn, train_dataloader, metrics, params)
+
+        # Evaluate for one epoch on validation set
+        val_metrics = evaluate(model, loss_fn, val_dataloader, metrics, params)
+
+        # val_acc = val_metrics['accuracy']
+        # is_best = val_acc>=best_val_acc
+        #
+        # # Save weights
+        # util.save_checkpoint({'epoch': epoch + 1,
+        #                        'state_dict': model.state_dict(),
+        #                        'optim_dict' : optimizer.state_dict()},
+        #                        is_best=is_best,
+        #                        checkpoint=model_dir)
+        #
+        # # If best_eval, best_save_path
+        # if is_best:
+        #     logging.info("- Found new best accuracy")
+        #     best_val_acc = val_acc
+        #
+        #     # Save best val metrics in a json file in the model directory
+        #     best_json_path = os.path.join(model_dir, "metrics_val_best_weights.json")
+        #     util.save_dict_to_json(val_metrics, best_json_path)
+
+        # Save latest val metrics in a json file in the model directory
+        last_json_path = os.path.join(model_dir, "metrics_val_last_weights.json")
+        util.save_dict_to_json(val_metrics, last_json_path)
+
+
+def evaluate(model, loss_fn, dataloader, metrics, params):
+    """Evaluate the model on `num_steps` batches.
+    Args:
+        model: (torch.nn.Module) the neural network
+        loss_fn: a function that takes batch_output and batch_labels and computes the loss for the batch
+        dataloader: (DataLoader) a torch.utils.data.DataLoader object that fetches data
+        metrics: (dict) a dictionary of functions that compute a metric using the output and labels of each batch
+        params: (Params) hyperparameters
+        num_steps: (int) number of batches to train on, each of size params.batch_size
+    """
+
+    # set model to evaluation mode
     model.eval()
+
+    # summary for current eval loop
+    summ = []
+
     dataset = dataloader.dataset
+
     total_loss = 0
 
+    # compute metrics over the dataset
     for i in range(64):
+
         sample = dataset[i]
-        sample['currimg'] = sample['currimg'][None, :,:,:]
-        sample['previmg'] = sample['previmg'][None, :,:,:]
+        sample['currimg'] = sample['currimg'][None, :, :, :]
+        sample['previmg'] = sample['previmg'][None, :, :, :]
         x1, x2 = sample['previmg'], sample['currimg']
         y = sample['currbb']
 
-        if use_gpu:
+        # move to GPU if available
+        if params.cuda:
             x1 = Variable(x1.cuda())
             x2 = Variable(x2.cuda())
             y = Variable(y.cuda(), requires_grad=False)
-        else:
-            x1 = Variable(x1)
-            x2 = Variable(x2)
-            y = Variable(y, requires_grad=False)
 
+        # compute model output
         output = model(x1, x2)
-        loss = criterion(output, y)
-        total_loss += loss.data[0]
-        print('[validation] epoch = %d, i = %d, loss = %f' % (epoch, i, loss.data[0]))
+        loss = loss_fn(output, y)
 
-    seq_loss = total_loss/64
-    return seq_loss
+        # extract data from torch Variable, move to cpu, convert to numpy arrays
+        output = output.data.cpu().numpy()
+
+        # compute all metrics on this batch
+        summary_batch = dict()
+        summary_batch['loss'] = loss.data[0]
+        summ.append(summary_batch)
+
+    # compute mean of all metrics in summary
+    metrics_mean = {metric: np.mean([x[metric] for x in summ]) for metric in summ[0]}
+    metrics_string = " ; ".join("{}: {:05.3f}".format(k, v) for k, v in metrics_mean.items())
+    logging.info("- Eval metrics : " + metrics_string)
+
+    return metrics_mean
 
 
 if __name__ == '__main__':
 
+    default_json = json.dumps([{"learning_rate": 1e-3,
+                                "batch_size": 1,
+                                "num_epochs": 100,
+                                "dropout_rate": 0.8,
+                                "num_channels": 32,
+                                "save_summary_steps": 100,
+                                "num_workers": 4}])
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model_dir', default=None, help="Directory containing params.json")
+    parser.add_argument('--restore_file', default=None,
+                        help="Optional, name of the file in --model_dir containing weights to reload before \
+                        training")  # 'best' or 'train'
+
+    args = parser.parse_args()
+
+    params=util.Params(default_json)
+
+
+    if args.model_dir :
+        params=util.Params()
+        params.update(args.model_dir)
+
+    params.cuda = torch.cuda.is_available()
+
+
     alov = ALOVDataset('/large_storage/imagedata++', '/large_storage/alov300++_rectangleAnnotation_full', transform)
 
-    dataloader = DataLoader(alov, batch_size = 1)
+    dataloader = DataLoader(alov, batch_size=params.batch_size)
+
+    use_gpu = torch.cuda.is_available()
+
+    model = model.Re3Net().cuda() if use_gpu else model.Re3Net()
+    optimizer = optim.Adam(model.parameters(), lr=params.learning_rate)
+
     net = 0
 
-    loss_function = torch.nn.L1Loss(size_average=False)
+    loss_fn=model.loss_fn(params.cuda)
 
-    if use_gpu:
-        net = model.Re3Net().cuda()
-        loss_function = loss_function.cuda()
-    else:
-        net = model.Re3Net()
 
-    optim = optim.Adam(net.parameters(), lr=0.00001, weight_decay=0.0005)
-
-    if os.path.exists(save_directory):
-        print('Directory %s already exists', save_directory)
-    else:
-        os.makedirs(save_directory)
-
-    num_epochs = 100
-    net = train_model(net, dataloader, optim, loss_function, num_epochs)
+    # Train the model
+    logging.info("Starting training for {} epoch(s)".format(params.num_epochs))
+    train_and_evaluate(model, dataloader, dataloader, optimizer, loss_fn, 0, params, args.model_dir,
+                       args.restore_file)

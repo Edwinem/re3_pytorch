@@ -150,3 +150,10 @@ class Re3Net(nn.Module):
         out = self.fc_final(lstm2_out)
         return out
 
+    def loss_fn(self,use_cuda):
+        if use_cuda:
+            return torch.nn.L1Loss(size_average=False).cuda()
+        else:
+            return torch.nn.L1Loss(size_average=False)
+
+
