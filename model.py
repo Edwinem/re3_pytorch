@@ -134,9 +134,6 @@ class Re3Net(nn.Module):
         self.h0=Variable(torch.rand(1,1024)).cuda()
         self.c0=Variable(torch.rand(1,1024)).cuda()
 
-    def init_hidden(self):
-        self.h0 = Variable(torch.rand(1, 1024)).cuda()
-        self.c0 = Variable(torch.rand(1, 1024)).cuda()
 
     def forward(self, x, y, prev_LSTM_state=False):
         out = self.AlexNet(x, y)

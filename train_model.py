@@ -4,6 +4,7 @@ import logging
 import json
 import warnings
 import os
+import gc
 
 #Pytorch modules
 from torch.utils.data import DataLoader
@@ -43,10 +44,15 @@ def train(model, optimizer, loss_fn, dataloader, metrics, params):
     summ = []
     loss_avg = util.RunningAverage()
 
+
+
     for i,data in enumerate(dataloader):
+        optimizer.zero_grad()
+
         x1, x2, y = data['previmg'], data['currimg'], data['currbb']
         if params.cuda:
             x1, x2, y = Variable(x1.cuda()), Variable(x2.cuda()), Variable(y.cuda(), requires_grad=False)
+
 
         output = model(x1, x2)
         loss = loss_fn(output, y)
@@ -68,8 +74,10 @@ def train(model, optimizer, loss_fn, dataloader, metrics, params):
 
         # update the average loss
         loss_avg.update(loss.data[0])
+        #del x1, x2, y
 
-    # compute mean of all metrics in summary
+
+        # compute mean of all metrics in summary
     metrics_mean = {metric: np.mean([x[metric] for x in summ]) for metric in summ[0]}
     metrics_string = " ; ".join("{}: {:05.3f}".format(k, v) for k, v in metrics_mean.items())
     logging.info("- Train metrics: " + metrics_string)
