@@ -101,7 +101,7 @@ def train_and_evaluate(model, train_dataloader, val_dataloader, optimizer, loss_
     # reload weights from restore_file if specified
     if restore_file is not None:
         restore_path = os.path.join(model_dir, args.restore_file + '.pth.tar')
-        # logging.info("Restoring parameters from {}".format(restore_path))
+        logging.info("Restoring parameters from {}".format(restore_path))
         util.load_checkpoint(restore_path, model, optimizer)
 
     best_val_acc = 0.0
