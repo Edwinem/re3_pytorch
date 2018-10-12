@@ -74,8 +74,6 @@ def train(model, optimizer, loss_fn, dataloader, metrics, params):
 
         # update the average loss
         loss_avg.update(loss.data[0])
-        if i==100:
-            break
 
 
         # compute mean of all metrics in summary
