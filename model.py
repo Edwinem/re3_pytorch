@@ -141,8 +141,8 @@ class Re3Net(nn.Module):
         h0=0
         c0=0
         if(x.is_cuda):
-            h0=Variable(torch.rand(1,1024)).cuda()
-            c0 = Variable(torch.rand(1, 1024)).cuda()
+            h0=Variable(torch.rand(x.shape[0],1024)).cuda()
+            c0 = Variable(torch.rand(x.shape[0], 1024)).cuda()
         else:
             h0=Variable(torch.rand(1,1024))
             c0 = Variable(torch.rand(1, 1024))

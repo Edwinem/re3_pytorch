@@ -45,7 +45,7 @@ def train(model, optimizer, loss_fn, dataloader, metrics, params):
     loss_avg = util.RunningAverage()
 
 
-
+    counter=0
     for i,data in enumerate(dataloader):
         optimizer.zero_grad()
 
@@ -70,11 +70,13 @@ def train(model, optimizer, loss_fn, dataloader, metrics, params):
             summary_batch = {}
             summary_batch['loss'] = loss.data[0]
             summ.append(summary_batch)
-            logging.info('- Loss for iteration {} is {}'.format(i,loss.data[0]))
+            logging.info('- Average Loss for iteration {} is {}'.format(i,loss.data[0]/params.batch_size))
 
         # update the average loss
         loss_avg.update(loss.data[0])
+        counter+=1
 
+    print(counter)
 
         # compute mean of all metrics in summary
     metrics_mean = {metric: np.mean([x[metric] for x in summ]) for metric in summ[0]}
@@ -96,15 +98,24 @@ def train_and_evaluate(model, train_dataloader, val_dataloader, optimizer, loss_
         model_dir: (string) directory containing config, weights and log
         restore_file: (string) optional- name of file to restore from (without its extension .pth.tar)
     """
+
+
+    epoch_start=0
+
     # reload weights from restore_file if specified
     if restore_file is not None:
-        restore_path = os.path.join(model_dir, args.restore_file + '.pth.tar')
+        restore_path=''
+        if os.path.isabs(args.restore_file):
+            restore_path=args.restore_file
+        else:
+            restore_path = os.path.join(model_dir, args.restore_file)
         logging.info("Restoring parameters from {}".format(restore_path))
-        util.load_checkpoint(restore_path, model, optimizer)
+        checkpoint=util.load_checkpoint(restore_path, model, optimizer)
+        epoch_start=checkpoint['epoch']-1
 
     best_val_acc = 0.0
 
-    for epoch in range(params.num_epochs):
+    for epoch in range(epoch_start,params.num_epochs):
         # Run one epoch
         logging.info("Epoch {}/{}".format(epoch + 1, params.num_epochs))
 
@@ -197,7 +208,7 @@ def evaluate(model, loss_fn, dataloader, metrics, params):
 if __name__ == '__main__':
 
     default_json = json.dumps([{"learning_rate": 1e-3,
-                                "batch_size": 1,
+                                "batch_size": 32,
                                 "num_epochs": 100,
                                 "dropout_rate": 0.8,
                                 "num_channels": 32,
