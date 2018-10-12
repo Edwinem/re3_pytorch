@@ -74,7 +74,8 @@ def train(model, optimizer, loss_fn, dataloader, metrics, params):
 
         # update the average loss
         loss_avg.update(loss.data[0])
-        #del x1, x2, y
+        if i==100:
+            break
 
 
         # compute mean of all metrics in summary
@@ -99,7 +100,7 @@ def train_and_evaluate(model, train_dataloader, val_dataloader, optimizer, loss_
     """
     # reload weights from restore_file if specified
     if restore_file is not None:
-        restore_path = os.path.join(args.model_dir, args.restore_file + '.pth.tar')
+        restore_path = os.path.join(model_dir, args.restore_file + '.pth.tar')
         # logging.info("Restoring parameters from {}".format(restore_path))
         util.load_checkpoint(restore_path, model, optimizer)
 
@@ -119,11 +120,11 @@ def train_and_evaluate(model, train_dataloader, val_dataloader, optimizer, loss_
         # is_best = val_acc>=best_val_acc
         #
         # # Save weights
-        # util.save_checkpoint({'epoch': epoch + 1,
-        #                        'state_dict': model.state_dict(),
-        #                        'optim_dict' : optimizer.state_dict()},
-        #                        is_best=is_best,
-        #                        checkpoint=model_dir)
+        util.save_checkpoint({'epoch': epoch + 1,
+                               'state_dict': model.state_dict(),
+                               'optim_dict' : optimizer.state_dict()},
+                                is_best=False,
+                               checkpoint=model_dir)
         #
         # # If best_eval, best_save_path
         # if is_best:
@@ -177,7 +178,7 @@ def evaluate(model, loss_fn, dataloader, metrics, params):
 
         # compute model output
         output = model(x1, x2)
-        loss = loss_fn(output, y)
+        loss = loss_fn(output[0], y)
 
         # extract data from torch Variable, move to cpu, convert to numpy arrays
         output = output.data.cpu().numpy()
@@ -215,10 +216,17 @@ if __name__ == '__main__':
 
     params=util.Params(default_json)
 
-
+    model_dir=0
     if args.model_dir :
         params=util.Params()
         params.update(args.model_dir)
+        model_dir=args.model_dir
+    else:
+        model_dir_path=os.path.join(".","model")
+        if  not os.path.isdir(model_dir_path):
+            os.mkdir(model_dir_path)
+        model_dir=model_dir_path
+
 
     params.cuda = torch.cuda.is_available()
 
@@ -239,5 +247,5 @@ if __name__ == '__main__':
 
     # Train the model
     logging.info("Starting training for {} epoch(s)".format(params.num_epochs))
-    train_and_evaluate(model, dataloader, dataloader, optimizer, loss_fn, 0, params, args.model_dir,
+    train_and_evaluate(model, dataloader, dataloader, optimizer, loss_fn, 0, params, model_dir,
                        args.restore_file)
