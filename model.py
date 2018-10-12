@@ -131,18 +131,28 @@ class Re3Net(nn.Module):
 
         self.fc_final = nn.Linear(1024,4)
 
-        self.h0=Variable(torch.rand(1,1024)).cuda()
-        self.c0=Variable(torch.rand(1,1024)).cuda()
+
+
+
 
 
     def forward(self, x, y, prev_LSTM_state=False):
         out = self.AlexNet(x, y)
+        h0=0
+        c0=0
+        if(x.is_cuda):
+            h0=Variable(torch.rand(1,1024)).cuda()
+            c0 = Variable(torch.rand(1, 1024)).cuda()
+        else:
+            h0=Variable(torch.rand(1,1024))
+            c0 = Variable(torch.rand(1, 1024))
 
-        lstm_out, self.h0 = self.lstm1(out, (self.h0, self.c0))
+
+        lstm_out, h0 = self.lstm1(out, (h0, c0))
 
         lstm2_in = torch.cat((out, lstm_out), dim=1)
 
-        lstm2_out, h1 = self.lstm2(lstm2_in, (self.h0, self.c0))
+        lstm2_out, h1 = self.lstm2(lstm2_in, (h0, c0))
 
         out = self.fc_final(lstm2_out)
         return out
